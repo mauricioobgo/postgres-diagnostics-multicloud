@@ -1,0 +1,78 @@
+{
+  "metadata": {
+    "collected_at": "2026-05-19T00:05:00+00:00",
+    "cloud": "aws",
+    "instance_memory_gib": 16.0,
+    "source": "sample"
+  },
+  "queries": {
+    "server_identity": [
+      {
+        "collected_at": "2026-05-19T00:05:00+00:00",
+        "database_name": "appdb",
+        "current_user": "reporter",
+        "server_version": "PostgreSQL 15.6 on x86_64-pc-linux-gnu, compiled by gcc, 64-bit",
+        "recovery_state": false,
+        "postmaster_start_time": "2026-05-18T03:17:00+00:00"
+      }
+    ],
+    "settings": [
+      {"name": "shared_buffers", "setting": "524288", "unit": "8kB"},
+      {"name": "work_mem", "setting": "65536", "unit": "kB"},
+      {"name": "maintenance_work_mem", "setting": "2097152", "unit": "kB"},
+      {"name": "autovacuum_work_mem", "setting": "-1", "unit": "kB"},
+      {"name": "autovacuum_vacuum_threshold", "setting": "50", "unit": null},
+      {"name": "autovacuum_vacuum_scale_factor", "setting": "0.2", "unit": null},
+      {"name": "autovacuum_analyze_threshold", "setting": "50", "unit": null},
+      {"name": "autovacuum_analyze_scale_factor", "setting": "0.1", "unit": null},
+      {"name": "temp_buffers", "setting": "1024", "unit": "8kB"},
+      {"name": "effective_cache_size", "setting": "1572864", "unit": "8kB"},
+      {"name": "max_connections", "setting": "600", "unit": null},
+      {"name": "hash_mem_multiplier", "setting": "2", "unit": null},
+      {"name": "max_parallel_workers_per_gather", "setting": "2", "unit": null},
+      {"name": "max_parallel_workers", "setting": "8", "unit": null},
+      {"name": "max_worker_processes", "setting": "8", "unit": null},
+      {"name": "idle_in_transaction_session_timeout", "setting": "0", "unit": "ms"},
+      {"name": "huge_pages", "setting": "try", "unit": null}
+    ],
+    "connection_summary": [
+      {"total_connections": 312, "active_connections": 44, "idle_connections": 232, "idle_in_txn_connections": 11, "waiting_connections": 3, "client_backends": 309}
+    ],
+    "database_temp": [
+      {"database_name": "appdb", "temp_files": 2411, "temp_bytes": 12884901888},
+      {"database_name": "postgres", "temp_files": 7, "temp_bytes": 10485760}
+    ],
+    "table_health": [
+      {"schema_name": "public", "table_name": "large_fact_table", "table_bytes": 9663676416, "live_rows_est": 9000000, "dead_rows_est": 2100000, "dead_row_pct_est": 18.92, "mod_since_analyze": 1800000, "ins_since_vacuum": 400000, "hot_update_pct": 8.3, "last_vacuum": null, "last_autovacuum": "2026-05-10T02:00:00+00:00", "last_analyze": null, "last_autoanalyze": "2026-05-09T02:00:00+00:00"},
+      {"schema_name": "public", "table_name": "events", "table_bytes": 2147483648, "live_rows_est": 12000000, "dead_rows_est": 80000, "dead_row_pct_est": 0.66, "mod_since_analyze": 25000, "ins_since_vacuum": 10000, "hot_update_pct": 72.5, "last_vacuum": "2026-05-18T23:40:00+00:00", "last_autovacuum": "2026-05-18T12:00:00+00:00", "last_analyze": "2026-05-18T23:35:00+00:00", "last_autoanalyze": "2026-05-18T12:05:00+00:00"}
+    ],
+    "long_running_transactions": [
+      {"pid": 4001, "application_name": "api-worker", "usename": "app", "state": "active", "xact_age": "03:45:00", "backend_xmin_age": 350000000, "query_age": "03:44:58", "wait_event_type": null, "wait_event": null, "query": "UPDATE large_fact_table SET processed_at = now() WHERE ..."},
+      {"pid": 4120, "application_name": "etl", "usename": "etl", "state": "idle in transaction", "xact_age": "01:12:00", "backend_xmin_age": 120000000, "query_age": "01:11:45", "wait_event_type": "Client", "wait_event": "ClientRead", "query": "SELECT count(*) FROM large_fact_table"}
+    ],
+    "replication_slot_health": [
+      {"slot_name": "old_analytics_slot", "slot_type": "logical", "active": false, "restart_lsn": "2/A000000", "wal_status": "reserved", "xmin_age": 220000000, "catalog_xmin_age": 220000000}
+    ],
+    "vacuum_progress": [],
+    "index_usage": [
+      {"schema_name": "public", "table_name": "large_fact_table", "index_name": "large_fact_table_old_idx", "index_bytes": 3221225472, "idx_scan": 0, "idx_tup_read": 0, "idx_tup_fetch": 0},
+      {"schema_name": "public", "table_name": "events", "index_name": "events_created_at_idx", "index_bytes": 536870912, "idx_scan": 890000, "idx_tup_read": 125000000, "idx_tup_fetch": 124500000}
+    ],
+    "extensions": [
+      {"extname": "pg_stat_statements"},
+      {"extname": "pg_buffercache"},
+      {"extname": "pgstattuple"}
+    ],
+    "pg_stat_statements_memory": [
+      {"queryid": 101, "calls": 5000, "temp_blks_read": 200000, "temp_blks_written": 150000, "temp_mb": 2734.38, "query": "SELECT * FROM large_fact_table ORDER BY created_at DESC"}
+    ],
+    "pg_buffercache_top_relations": [
+      {"relation_name": "large_fact_table", "schema_name": "public", "buffers": 180000, "buffer_mb": 1406.25},
+      {"relation_name": "events", "schema_name": "public", "buffers": 42000, "buffer_mb": 328.13}
+    ],
+    "pgstattuple_approx_top_tables": [
+      {"schema_name": "public", "table_name": "large_fact_table", "table_len": 9663676416, "dead_tuple_percent": 16.8, "approx_free_percent": 9.2},
+      {"schema_name": "public", "table_name": "events", "table_len": 2147483648, "dead_tuple_percent": 0.4, "approx_free_percent": 2.1}
+    ]
+  }
+}

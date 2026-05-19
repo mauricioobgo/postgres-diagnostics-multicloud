@@ -1,0 +1,17 @@
+README.md
+pyproject.toml
+src/pg_memory_diagnostics/__init__.py
+src/pg_memory_diagnostics/analysis.py
+src/pg_memory_diagnostics/catalog.py
+src/pg_memory_diagnostics/cli.py
+src/pg_memory_diagnostics/collector.py
+src/pg_memory_diagnostics/html_report.py
+src/pg_memory_diagnostics/models.py
+src/pg_memory_diagnostics.egg-info/PKG-INFO
+src/pg_memory_diagnostics.egg-info/SOURCES.txt
+src/pg_memory_diagnostics.egg-info/dependency_links.txt
+src/pg_memory_diagnostics.egg-info/entry_points.txt
+src/pg_memory_diagnostics.egg-info/requires.txt
+src/pg_memory_diagnostics.egg-info/top_level.txt
+tests/test_analysis.py
+tests/test_html_report.py

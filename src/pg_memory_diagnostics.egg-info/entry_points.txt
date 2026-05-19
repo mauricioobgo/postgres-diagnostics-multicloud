@@ -1,0 +1,2 @@
+[console_scripts]
+pg-memory-diagnostics = pg_memory_diagnostics.cli:main

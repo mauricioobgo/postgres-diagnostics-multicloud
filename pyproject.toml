@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pg-memory-diagnostics"
+version = "0.1.0"
+description = "PostgreSQL memory diagnostics and HTML reporting for AWS and Google Cloud"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "psycopg[binary]>=3.2,<4",
+]
+
+[dependency-groups]
+dev = []
+
+[project.scripts]
+pg-memory-diagnostics = "pg_memory_diagnostics.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+package = true
