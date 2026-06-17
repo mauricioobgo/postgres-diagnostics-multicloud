@@ -24,6 +24,11 @@ class Finding:
     summary: str
     evidence: list[str] = field(default_factory=list)
     suggested_query_keys: list[str] = field(default_factory=list)
+    # Plain-language fields so a non-expert reader understands the finding.
+    category: str = "memory"  # memory | storage | connections | maintenance | config
+    plain_explanation: str = ""
+    recommendation: str = ""
+    references: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
