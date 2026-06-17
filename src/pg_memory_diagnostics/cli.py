@@ -6,6 +6,12 @@ from pathlib import Path
 
 from pg_memory_diagnostics.analysis import analyze_snapshot
 from pg_memory_diagnostics.collector import collect_snapshot, load_snapshot, save_snapshot
+from pg_memory_diagnostics.connection import (
+    DEFAULT_PROXY_HOST,
+    DEFAULT_PROXY_PORT,
+    DEFAULT_SOCKET_DIR,
+    build_cloudsql_proxy_dsn,
+)
 from pg_memory_diagnostics.html_report import write_report
 
 
@@ -52,7 +58,49 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.getenv("PGMD_APP_NAME", "pg-memory-diagnostics"),
         help="application_name used during live collection.",
     )
+
+    proxy = parser.add_argument_group("Cloud SQL Auth Proxy")
+    proxy.add_argument(
+        "--cloudsql-proxy",
+        action="store_true",
+        default=_env_bool("PGMD_CLOUDSQL_PROXY"),
+        help="Build the DSN for a locally running Cloud SQL Auth Proxy instead of passing --dsn.",
+    )
+    proxy.add_argument(
+        "--cloudsql-proxy-mode",
+        choices=["tcp", "unix"],
+        default=os.getenv("PGMD_CLOUDSQL_PROXY_MODE", "tcp"),
+        help="How the Auth Proxy is listening: a local TCP port (default) or a Unix socket.",
+    )
+    proxy.add_argument(
+        "--cloudsql-instance",
+        default=os.getenv("PGMD_CLOUDSQL_INSTANCE"),
+        help="INSTANCE_CONNECTION_NAME (project:region:instance), required for Unix-socket mode.",
+    )
+    proxy.add_argument(
+        "--cloudsql-proxy-host",
+        default=os.getenv("PGMD_CLOUDSQL_PROXY_HOST", DEFAULT_PROXY_HOST),
+        help=f"Host the TCP proxy listens on (default {DEFAULT_PROXY_HOST}).",
+    )
+    proxy.add_argument(
+        "--cloudsql-proxy-port",
+        type=int,
+        default=int(os.getenv("PGMD_CLOUDSQL_PROXY_PORT", str(DEFAULT_PROXY_PORT))),
+        help=f"Port the proxy listens on (default {DEFAULT_PROXY_PORT}).",
+    )
+    proxy.add_argument(
+        "--cloudsql-socket-dir",
+        default=os.getenv("PGMD_CLOUDSQL_SOCKET_DIR", DEFAULT_SOCKET_DIR),
+        help=f"Directory the Unix-socket proxy uses (default {DEFAULT_SOCKET_DIR}).",
+    )
+    proxy.add_argument("--db-user", default=os.getenv("PGMD_DB_USER"), help="Database user (Cloud SQL proxy mode).")
+    proxy.add_argument("--db-password", default=os.getenv("PGMD_DB_PASSWORD"), help="Database password (Cloud SQL proxy mode).")
+    proxy.add_argument("--db-name", default=os.getenv("PGMD_DB_NAME"), help="Database name (Cloud SQL proxy mode).")
     return parser
+
+
+def _env_bool(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def main() -> int:
@@ -62,14 +110,31 @@ def main() -> int:
     if not args.output:
         parser.error("Provide --output or set PGMD_OUTPUT.")
 
-    if bool(args.dsn) == bool(args.snapshot_in):
-        parser.error("Provide exactly one of --dsn or --snapshot-in.")
+    sources = [bool(args.dsn), bool(args.snapshot_in), bool(args.cloudsql_proxy)]
+    if sum(sources) != 1:
+        parser.error("Provide exactly one connection source: --dsn, --snapshot-in, or --cloudsql-proxy.")
+
+    dsn = args.dsn
+    if args.cloudsql_proxy:
+        try:
+            dsn = build_cloudsql_proxy_dsn(
+                user=args.db_user,
+                password=args.db_password,
+                dbname=args.db_name,
+                mode=args.cloudsql_proxy_mode,
+                host=args.cloudsql_proxy_host,
+                port=args.cloudsql_proxy_port,
+                socket_dir=args.cloudsql_socket_dir,
+                instance_connection_name=args.cloudsql_instance,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
 
     if args.snapshot_in:
         snapshot = load_snapshot(args.snapshot_in)
     else:
         snapshot = collect_snapshot(
-            dsn=args.dsn,
+            dsn=dsn,
             cloud=args.cloud,
             app_name=args.app_name,
             instance_memory_gib=args.instance_memory_gib,

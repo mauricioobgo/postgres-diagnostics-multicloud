@@ -50,7 +50,15 @@ QUERY_CATALOG: dict[str, QuerySpec] = {
           'max_parallel_maintenance_workers',
           'idle_in_transaction_session_timeout',
           'temp_file_limit',
-          'huge_pages'
+          'huge_pages',
+          'max_wal_size',
+          'min_wal_size',
+          'wal_keep_size',
+          'checkpoint_timeout',
+          'checkpoint_completion_target',
+          'default_statistics_target',
+          'autovacuum',
+          'log_temp_files'
         )
         ORDER BY name;
         """.strip(),
@@ -88,6 +96,116 @@ QUERY_CATALOG: dict[str, QuerySpec] = {
         title="Installed extensions",
         description="Discovers optional observability extensions.",
         sql="SELECT extname FROM pg_extension ORDER BY extname;",
+    ),
+    "database_sizes": QuerySpec(
+        key="database_sizes",
+        title="Database sizes",
+        description="On-disk size of each database. Shows where storage is concentrated.",
+        sql="""
+        SELECT
+          datname AS database_name,
+          pg_database_size(datname) AS size_bytes
+        FROM pg_database
+        WHERE datistemplate = false
+        ORDER BY pg_database_size(datname) DESC;
+        """.strip(),
+    ),
+    "cache_hit_ratio": QuerySpec(
+        key="cache_hit_ratio",
+        title="Cache hit ratio by database",
+        description="Share of block reads served from memory vs disk. Low values mean the working set does not fit in cache.",
+        sql="""
+        SELECT
+          datname AS database_name,
+          blks_read,
+          blks_hit,
+          round(100 * blks_hit::numeric / NULLIF(blks_hit + blks_read, 0), 2) AS cache_hit_pct,
+          xact_commit,
+          xact_rollback,
+          tup_returned,
+          tup_fetched,
+          deadlocks,
+          temp_files,
+          temp_bytes
+        FROM pg_stat_database
+        WHERE datname IS NOT NULL
+        ORDER BY (blks_hit + blks_read) DESC NULLS LAST;
+        """.strip(),
+    ),
+    "largest_relations": QuerySpec(
+        key="largest_relations",
+        title="Largest relations on disk",
+        description="Biggest tables by total size including indexes and TOAST. Large relations concentrate bloat, vacuum cost, and slow scans.",
+        sql="""
+        SELECT
+          n.nspname AS schema_name,
+          c.relname AS relation_name,
+          c.relkind AS relation_kind,
+          pg_total_relation_size(c.oid) AS total_bytes,
+          pg_table_size(c.oid) AS table_bytes,
+          pg_indexes_size(c.oid) AS index_bytes,
+          (pg_total_relation_size(c.oid) - pg_table_size(c.oid) - pg_indexes_size(c.oid)) AS toast_bytes
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind IN ('r', 'm', 'p')
+          AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        ORDER BY pg_total_relation_size(c.oid) DESC
+        LIMIT 25;
+        """.strip(),
+    ),
+    "table_bloat_estimate": QuerySpec(
+        key="table_bloat_estimate",
+        title="Estimated table bloat",
+        description="Statistics-based table bloat estimate that needs no extension. Treat as an approximation and confirm with pgstattuple before acting.",
+        sql="""
+        SELECT
+          schemaname AS schema_name,
+          tablename AS table_name,
+          reltuples::bigint AS est_rows,
+          relpages::bigint AS actual_pages,
+          otta AS expected_pages,
+          ROUND((CASE WHEN otta = 0 THEN 0.0 ELSE sml.relpages::float / otta END)::numeric, 1) AS bloat_ratio,
+          CASE WHEN relpages < otta THEN 0 ELSE bs * (sml.relpages - otta)::bigint END AS wasted_bytes
+        FROM (
+          SELECT
+            schemaname, tablename, cc.reltuples, cc.relpages, bs,
+            CEIL((cc.reltuples * ((datahdr + ma -
+              (CASE WHEN datahdr % ma = 0 THEN ma ELSE datahdr % ma END)) + nullhdr2 + 4)) / (bs - 20::float)) AS otta
+          FROM (
+            SELECT
+              ma, bs, schemaname, tablename,
+              (datawidth + (hdr + ma - (CASE WHEN hdr % ma = 0 THEN ma ELSE hdr % ma END)))::numeric AS datahdr,
+              (maxfracsum * (nullhdr + ma - (CASE WHEN nullhdr % ma = 0 THEN ma ELSE nullhdr % ma END))) AS nullhdr2
+            FROM (
+              SELECT
+                schemaname, tablename, hdr, ma, bs,
+                SUM((1 - null_frac) * avg_width) AS datawidth,
+                MAX(null_frac) AS maxfracsum,
+                hdr + (
+                  SELECT 1 + count(*) / 8
+                  FROM pg_stats s2
+                  WHERE null_frac <> 0 AND s2.schemaname = s.schemaname AND s2.tablename = s.tablename
+                ) AS nullhdr
+              FROM pg_stats s, (
+                SELECT
+                  current_setting('block_size')::numeric AS bs,
+                  23 AS hdr,
+                  CASE WHEN version() ~ 'mingw32' THEN 8 ELSE 4 END AS ma
+              ) AS constants
+              WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+              GROUP BY 1, 2, 3, 4, 5
+            ) AS foo
+          ) AS rs
+          JOIN pg_class cc ON cc.relname = rs.tablename
+          JOIN pg_namespace nn ON cc.relnamespace = nn.oid
+            AND nn.nspname = rs.schemaname
+            AND nn.nspname NOT IN ('pg_catalog', 'information_schema')
+          WHERE cc.relkind = 'r'
+        ) AS sml
+        WHERE relpages > 128
+        ORDER BY wasted_bytes DESC
+        LIMIT 20;
+        """.strip(),
     ),
     "table_health": QuerySpec(
         key="table_health",
@@ -292,6 +410,10 @@ BASE_QUERY_ORDER = [
     "settings",
     "connection_summary",
     "database_temp",
+    "database_sizes",
+    "cache_hit_ratio",
+    "largest_relations",
+    "table_bloat_estimate",
     "table_health",
     "long_running_transactions",
     "replication_slot_health",
@@ -312,6 +434,10 @@ FOLLOW_UP_QUERY_GROUPS: dict[str, list[str]] = {
     "generic": [
         "connection_summary",
         "database_temp",
+        "database_sizes",
+        "cache_hit_ratio",
+        "largest_relations",
+        "table_bloat_estimate",
         "table_health",
         "long_running_transactions",
         "replication_slot_health",
@@ -323,12 +449,20 @@ FOLLOW_UP_QUERY_GROUPS: dict[str, list[str]] = {
     ],
     "aws": [
         "aws_session_breakdown",
+        "database_sizes",
+        "cache_hit_ratio",
+        "largest_relations",
+        "table_bloat_estimate",
         "pg_stat_statements_memory",
         "pg_buffercache_top_relations",
         "pgstattuple_approx_top_tables",
     ],
     "gcp": [
         "gcp_session_breakdown",
+        "database_sizes",
+        "cache_hit_ratio",
+        "largest_relations",
+        "table_bloat_estimate",
         "pg_stat_statements_memory",
         "pg_buffercache_top_relations",
         "pgstattuple_approx_top_tables",

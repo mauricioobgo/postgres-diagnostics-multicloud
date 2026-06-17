@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from pg_memory_diagnostics.catalog import FOLLOW_UP_QUERY_GROUPS, QUERY_CATALOG
+from pg_memory_diagnostics.knowledge import guidance_for
 from pg_memory_diagnostics.models import Finding, ReportContext
 
 
@@ -127,9 +128,15 @@ def analyze_snapshot(
     idle_connections = _safe_int(connection_summary.get("idle_connections"))
     idle_in_txn_connections = _safe_int(connection_summary.get("idle_in_txn_connections"))
 
+    temp_file_limit = _safe_int(settings.get("temp_file_limit", {}).get("setting"), -1)
+
     temp_rows = query_results.get("database_temp") or []
     total_temp_bytes = sum(_safe_int(row.get("temp_bytes")) for row in temp_rows)
     top_temp_db = temp_rows[0] if temp_rows else None
+    database_size_rows = query_results.get("database_sizes") or []
+    cache_hit_rows = query_results.get("cache_hit_ratio") or []
+    largest_relation_rows = query_results.get("largest_relations") or []
+    bloat_rows = query_results.get("table_bloat_estimate") or []
     table_health_rows = query_results.get("table_health") or []
     long_xact_rows = query_results.get("long_running_transactions") or []
     slot_rows = query_results.get("replication_slot_health") or []
@@ -284,6 +291,104 @@ def analyze_snapshot(
                 f"total temp bytes = {format_bytes(total_temp_bytes)}",
                 *top_db_bits,
             ],
+            suggested_query_keys=["database_temp", "pg_stat_statements_memory"],
+        )
+
+    # --- Storage diagnostics -------------------------------------------------
+    total_database_bytes = sum(_safe_int(row.get("size_bytes")) for row in database_size_rows)
+    largest_database = database_size_rows[0] if database_size_rows else None
+    if largest_database and total_database_bytes > 0:
+        largest_db_bytes = _safe_int(largest_database.get("size_bytes"))
+        largest_db_ratio = largest_db_bytes / total_database_bytes
+        if largest_db_bytes >= 50 * 1024**3 and largest_db_ratio >= 0.5 and len(database_size_rows) > 1:
+            _add_finding(
+                findings,
+                finding_id="large-database-size",
+                severity="low",
+                title="One database dominates on-disk storage",
+                summary="Most of the cluster's storage is concentrated in a single database, which is where growth and bloat will have the biggest impact.",
+                evidence=[
+                    f"largest database = {largest_database.get('database_name')} ({format_bytes(largest_db_bytes)})",
+                    f"share of total = {largest_db_ratio:.0%}",
+                    f"total across databases = {format_bytes(total_database_bytes)}",
+                ],
+                suggested_query_keys=["database_sizes", "largest_relations", "table_bloat_estimate"],
+            )
+
+    # Cache hit ratio across the busiest databases (ignore near-idle ones).
+    busy_cache_rows = [
+        row for row in cache_hit_rows
+        if (_safe_int(row.get("blks_hit")) + _safe_int(row.get("blks_read"))) >= 100000
+        and row.get("cache_hit_pct") is not None
+    ]
+    if busy_cache_rows:
+        worst_cache = min(busy_cache_rows, key=lambda row: _safe_float(row.get("cache_hit_pct"), 100.0))
+        worst_cache_pct = _safe_float(worst_cache.get("cache_hit_pct"), 100.0)
+        if worst_cache_pct < 95.0:
+            severity = "high" if worst_cache_pct < 90.0 else "medium"
+            _add_finding(
+                findings,
+                finding_id="low-cache-hit-ratio",
+                severity=severity,
+                title="Cache hit ratio is below a healthy level",
+                summary="A meaningful share of reads are coming from disk instead of memory, which slows queries and increases I/O.",
+                evidence=[
+                    f"database = {worst_cache.get('database_name')}",
+                    f"cache hit ratio = {worst_cache_pct:.2f}%",
+                    f"blocks from disk = {_safe_int(worst_cache.get('blks_read'))}",
+                    f"blocks from cache = {_safe_int(worst_cache.get('blks_hit'))}",
+                ],
+                suggested_query_keys=["cache_hit_ratio", "pg_buffercache_top_relations", "largest_relations"],
+            )
+
+    if largest_relation_rows:
+        top_relation = largest_relation_rows[0]
+        top_relation_bytes = _safe_int(top_relation.get("total_bytes"))
+        if top_relation_bytes >= 50 * 1024**3:
+            _add_finding(
+                findings,
+                finding_id="high-disk-relation",
+                severity="low",
+                title="A single relation dominates storage",
+                summary="One table (with its indexes and TOAST) is very large. Large relations concentrate vacuum cost, bloat risk, and slow scans.",
+                evidence=[
+                    f"relation = {top_relation.get('schema_name')}.{top_relation.get('relation_name')}",
+                    f"total size = {format_bytes(top_relation_bytes)}",
+                    f"indexes = {format_bytes(_safe_int(top_relation.get('index_bytes')))}",
+                    f"toast = {format_bytes(_safe_int(top_relation.get('toast_bytes')))}",
+                ],
+                suggested_query_keys=["largest_relations", "index_usage", "table_bloat_estimate"],
+            )
+
+    if bloat_rows:
+        worst_bloat = max(bloat_rows, key=lambda row: _safe_int(row.get("wasted_bytes")))
+        wasted = _safe_int(worst_bloat.get("wasted_bytes"))
+        bloat_ratio = _safe_float(worst_bloat.get("bloat_ratio"), 1.0)
+        if wasted >= 1024**3 and bloat_ratio >= 2.0:
+            severity = "high" if (wasted >= 10 * 1024**3 and bloat_ratio >= 4.0) else "medium"
+            _add_finding(
+                findings,
+                finding_id="table-bloat-estimate",
+                severity=severity,
+                title="A table appears significantly bloated",
+                summary="A statistics-based estimate suggests a table uses far more pages than its live data needs. This wastes storage and makes scans read extra pages.",
+                evidence=[
+                    f"table = {worst_bloat.get('schema_name')}.{worst_bloat.get('table_name')}",
+                    f"estimated wasted space = {format_bytes(wasted)}",
+                    f"bloat ratio (actual/expected pages) = {bloat_ratio:.1f}x",
+                    "This is an estimate; confirm with pgstattuple before reclaiming space.",
+                ],
+                suggested_query_keys=["table_bloat_estimate", "pgstattuple_approx_top_tables", "vacuum_progress"],
+            )
+
+    if temp_file_limit == -1:
+        _add_finding(
+            findings,
+            finding_id="temp-file-limit-unset",
+            severity="low",
+            title="temp_file_limit is unlimited",
+            summary="There is no cap on temporary file space, so a single runaway spilling query could consume all free storage.",
+            evidence=["temp_file_limit = -1 (unlimited)"],
             suggested_query_keys=["database_temp", "pg_stat_statements_memory"],
         )
 
@@ -490,6 +595,29 @@ def analyze_snapshot(
 
     findings.sort(key=lambda finding: {"high": 0, "medium": 1, "low": 2}.get(finding.severity, 3))
 
+    # Attach plain-language explanation, recommendation, and references so the
+    # report is readable by users who are not PostgreSQL experts.
+    for finding in findings:
+        guidance = guidance_for(finding.id)
+        if guidance is None:
+            continue
+        finding.category = guidance.category
+        finding.plain_explanation = guidance.plain_explanation
+        finding.recommendation = guidance.recommendation
+        finding.references = list(guidance.references)
+
+    severity_counts = {"high": 0, "medium": 0, "low": 0}
+    for finding in findings:
+        if finding.severity in severity_counts:
+            severity_counts[finding.severity] += 1
+
+    total_database_bytes = sum(_safe_int(row.get("size_bytes")) for row in database_size_rows)
+    overall_cache_hit_pct = None
+    total_blks_hit = sum(_safe_int(row.get("blks_hit")) for row in cache_hit_rows)
+    total_blks_read = sum(_safe_int(row.get("blks_read")) for row in cache_hit_rows)
+    if total_blks_hit + total_blks_read > 0:
+        overall_cache_hit_pct = round(100 * total_blks_hit / (total_blks_hit + total_blks_read), 2)
+
     derived = {
         "instance_memory_bytes": instance_memory_bytes,
         "shared_buffers_bytes": shared_buffers,
@@ -509,6 +637,10 @@ def analyze_snapshot(
         "active_working_set_mem_bytes": int(active_working_set_mem),
         "worst_case_connection_mem_bytes": int(worst_case_connection_mem),
         "potential_memory_commit_bytes": int(potential_memory_commit),
+        "total_database_bytes": total_database_bytes,
+        "overall_cache_hit_pct": overall_cache_hit_pct,
+        "temp_file_limit_bytes": temp_file_limit * 1024 if temp_file_limit > 0 else temp_file_limit,
+        "severity_counts": severity_counts,
         "follow_up_query_keys": [*FOLLOW_UP_QUERY_GROUPS["generic"], *FOLLOW_UP_QUERY_GROUPS.get(cloud, [])],
     }
 
